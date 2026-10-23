@@ -1,0 +1,248 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - source-*
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      source_commit: ${{ steps.version.outputs.source_commit }}
+      source_tag: ${{ steps.version.outputs.source_tag }}
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate version
+        id: version
+        run: |
+          set -euo pipefail
+
+          semver='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$'
+          source_tag="$GITHUB_REF_NAME"
+          version="${source_tag#source-}"
+
+          if [[ "$source_tag" != "source-$version" || ! "$version" =~ $semver ]]; then
+            echo "source tag must be source-<semantic version> (for example, source-1.2.3)" >&2
+            exit 1
+          fi
+
+          echo "Resolved version: $version"
+
+          tag="v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "tag $tag already exists" >&2
+            exit 1
+          fi
+
+          source_commit="$(git rev-parse "$source_tag^{commit}")"
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "source_tag=$source_tag" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build-linux:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            triple: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            triple: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            rustup target add --toolchain 1.95.0 $(./scripts/build.sh --list-targets)
+          fi
+
+      - name: Build and test
+        run: |
+          set -euo pipefail
+          make test
+
+      - name: Pack architecture slice
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          set -euo pipefail
+          tar -C out/RCodesignBinary.artifactbundle -czf "$RUNNER_TEMP/$TRIPLE.tar.gz" "$TRIPLE"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: slice-${{ matrix.triple }}
+          path: ${{ runner.temp }}/${{ matrix.triple }}.tar.gz
+          if-no-files-found: error
+
+  build-apple:
+    needs: validate
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            rustup target add --toolchain 1.95.0 $(./scripts/build.sh --list-targets)
+          fi
+
+      - name: Build and test
+        run: |
+          set -euo pipefail
+          make test
+
+      - name: Pack Apple slices
+        run: |
+          set -euo pipefail
+          tar -C out/RCodesignBinary.artifactbundle -czf "$RUNNER_TEMP/apple.tar.gz" \
+            arm64-apple-macosx \
+            x86_64-apple-macosx \
+            arm64-apple-ios \
+            arm64-apple-ios-simulator \
+            x86_64-apple-ios-simulator
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: slice-apple
+          path: ${{ runner.temp }}/apple.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs:
+      - validate
+      - build-linux
+      - build-apple
+    runs-on: ubuntu-24.04
+    env:
+      ARCHIVE: RCodesignBinary.artifactbundle.zip
+      BUNDLE: out/RCodesignBinary.artifactbundle
+      SOURCE_TAG: ${{ needs.validate.outputs.source_tag }}
+      SOURCE_COMMIT: ${{ needs.validate.outputs.source_commit }}
+      TAG: ${{ needs.validate.outputs.tag }}
+      VERSION: ${{ needs.validate.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: slice-*
+          path: ${{ runner.temp }}/rcodesign-slices
+          merge-multiple: true
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+
+      - name: Assemble and test artifact bundle
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$BUNDLE/include"
+          for archive in "$RUNNER_TEMP"/rcodesign-slices/*.tar.gz; do
+            tar -xzf "$archive" -C "$BUNDLE"
+          done
+
+          cp include/rcodesign.h "$BUNDLE/include/rcodesign.h"
+          cp include/module.modulemap "$BUNDLE/include/module.modulemap"
+          ./scripts/update-info.sh "$BUNDLE" "$VERSION"
+
+          test -f "$BUNDLE/arm64-apple-macosx/librcodesign_ffi.a"
+          test -f "$BUNDLE/x86_64-apple-macosx/librcodesign_ffi.a"
+          test -f "$BUNDLE/arm64-apple-ios/librcodesign_ffi.a"
+          test -f "$BUNDLE/arm64-apple-ios-simulator/librcodesign_ffi.a"
+          test -f "$BUNDLE/x86_64-apple-ios-simulator/librcodesign_ffi.a"
+          test -f "$BUNDLE/aarch64-unknown-linux-gnu/librcodesign_ffi.a"
+          test -f "$BUNDLE/x86_64-unknown-linux-gnu/librcodesign_ffi.a"
+          make test-without-building
+
+      - name: Archive artifact bundle
+        id: archive
+        run: |
+          set -euo pipefail
+
+          pushd out >/dev/null
+          zip -qry "$RUNNER_TEMP/$ARCHIVE" RCodesignBinary.artifactbundle
+          popd >/dev/null
+
+          checksum="$(swift package compute-checksum "$RUNNER_TEMP/$ARCHIVE")"
+          echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        run: |
+          set -euo pipefail
+
+          if gh release view "$SOURCE_TAG" >/dev/null 2>&1; then
+            gh release upload "$SOURCE_TAG" \
+              "$RUNNER_TEMP/$ARCHIVE#$ARCHIVE" \
+              --clobber
+          else
+            gh release create "$SOURCE_TAG" \
+              "$RUNNER_TEMP/$ARCHIVE#$ARCHIVE" \
+              --verify-tag \
+              --title "v$VERSION" \
+              --generate-notes
+          fi
+
+      - name: Commit release manifest and tag version
+        env:
+          CHECKSUM: ${{ steps.archive.outputs.checksum }}
+        run: |
+          set -euo pipefail
+
+          source_commit="$SOURCE_COMMIT"
+
+          artifact_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$SOURCE_TAG/$ARCHIVE"
+          awk -v url="$artifact_url" -v checksum="$CHECKSUM" '
+            /path: "out\/RCodesignBinary\.artifactbundle"/ {
+              match($0, /^[[:space:]]*/)
+              indent = substr($0, RSTART, RLENGTH)
+              print indent "url: \"" url "\","
+              print indent "checksum: \"" checksum "\""
+              replaced = 1
+              next
+            }
+            { print }
+            END { if (!replaced) exit 1 }
+          ' Package.swift > "$RUNNER_TEMP/Package.swift"
+          mv "$RUNNER_TEMP/Package.swift" Package.swift
+
+          if [[ "$(git rev-parse HEAD)" != "$source_commit" ]]; then
+            echo "checkout does not match source commit $source_commit" >&2
+            exit 1
+          fi
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Package.swift
+          git commit -m "Release $VERSION"
+          release_commit="$(git rev-parse HEAD)"
+
+          # Publish the branch first so the version tag is never visible before
+          # its manifest is available.
+          git push --force origin "$release_commit:refs/heads/release"
+          git push origin "$release_commit:refs/tags/$TAG"

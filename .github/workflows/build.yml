@@ -1,0 +1,42 @@
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - macos-26
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            rustup target add --toolchain 1.95.0 $(./scripts/build.sh --list-targets)
+          fi
+
+      - name: Build and test
+        run: |
+          set -euo pipefail
+          make test
