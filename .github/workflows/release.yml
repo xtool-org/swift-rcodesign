@@ -98,36 +98,51 @@ jobs:
 
   build-apple:
     needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            triple: arm64-apple-macosx
+          - target: x86_64-apple-darwin
+            triple: x86_64-apple-macosx
+          - target: aarch64-apple-ios
+            triple: arm64-apple-ios
+          - target: aarch64-apple-ios-sim
+            triple: arm64-apple-ios-simulator
+          - target: x86_64-apple-ios
+            triple: x86_64-apple-ios-simulator
+    name: Apple (${{ matrix.triple }})
     runs-on: xcode-27
+    env:
+      RUST_TARGETS: ${{ matrix.target }}
+      TRIPLE: ${{ matrix.triple }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         run: |
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
-          if [[ "$RUNNER_OS" == macOS ]]; then
-            rustup target add --toolchain 1.95.0 $(./scripts/build.sh --list-targets)
-          fi
+          rustup target add --toolchain 1.95.0 "$RUST_TARGETS"
 
       - name: Build and test
         run: |
           set -euo pipefail
-          make test
+          make build
+          # Only the native slice can be linked into this runner's Swift tests.
+          if [[ "$RUST_TARGETS" == "$(rustc -vV | sed -n 's/^host: //p')" ]]; then
+            make test-without-building
+          fi
 
-      - name: Pack Apple slices
+      - name: Pack architecture slice
         run: |
           set -euo pipefail
-          tar -C out/RCodesignBinary.artifactbundle -czf "$RUNNER_TEMP/apple.tar.gz" \
-            arm64-apple-macosx \
-            x86_64-apple-macosx \
-            arm64-apple-ios \
-            arm64-apple-ios-simulator \
-            x86_64-apple-ios-simulator
+          tar -C out/RCodesignBinary.artifactbundle -czf "$RUNNER_TEMP/$TRIPLE.tar.gz" "$TRIPLE"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: slice-apple
-          path: ${{ runner.temp }}/apple.tar.gz
+          name: slice-${{ matrix.triple }}
+          path: ${{ runner.temp }}/${{ matrix.triple }}.tar.gz
           if-no-files-found: error
 
   release:

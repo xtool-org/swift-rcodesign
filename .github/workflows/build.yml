@@ -21,22 +21,38 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner:
-          - ubuntu-24.04
-          - ubuntu-24.04-arm
-          - xcode-27
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: xcode-27
+            target: aarch64-apple-darwin
+          - runner: xcode-27
+            target: x86_64-apple-darwin
+          - runner: xcode-27
+            target: aarch64-apple-ios
+          - runner: xcode-27
+            target: aarch64-apple-ios-sim
+          - runner: xcode-27
+            target: x86_64-apple-ios
+    name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    env:
+      RUST_TARGETS: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         run: |
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
-          if [[ "$RUNNER_OS" == macOS ]]; then
-            rustup target add --toolchain 1.95.0 $(./scripts/build.sh --list-targets)
-          fi
+          rustup target add --toolchain 1.95.0 "$RUST_TARGETS"
 
       - name: Build and test
         run: |
           set -euo pipefail
-          make test
+          make build
+          # Only the native slice can be linked into this runner's Swift tests.
+          if [[ "$RUST_TARGETS" == "$(rustc -vV | sed -n 's/^host: //p')" ]]; then
+            make test-without-building
+          fi
