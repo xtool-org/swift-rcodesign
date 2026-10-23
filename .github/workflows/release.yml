@@ -24,7 +24,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -69,7 +69,7 @@ jobs:
             triple: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         run: |
@@ -90,7 +90,7 @@ jobs:
           set -euo pipefail
           tar -C out/RCodesignBinary.artifactbundle -czf "$RUNNER_TEMP/$TRIPLE.tar.gz" "$TRIPLE"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: slice-${{ matrix.triple }}
           path: ${{ runner.temp }}/${{ matrix.triple }}.tar.gz
@@ -98,9 +98,9 @@ jobs:
 
   build-apple:
     needs: validate
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         run: |
@@ -124,7 +124,7 @@ jobs:
             arm64-apple-ios-simulator \
             x86_64-apple-ios-simulator
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: slice-apple
           path: ${{ runner.temp }}/apple.tar.gz
@@ -145,7 +145,7 @@ jobs:
       VERSION: ${{ needs.validate.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
