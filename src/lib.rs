@@ -5,7 +5,8 @@
 //! shallow signing only skips nested bundles.
 
 use apple_codesign::{
-    SettingsScope, SigningSettings, UnifiedSigner, cryptography::InMemoryPrivateKey,
+    EmbeddedSignature, MachFile, SettingsScope, SignatureReader, SigningSettings, UnifiedSigner,
+    cryptography::InMemoryPrivateKey,
 };
 use std::{
     collections::BTreeSet,
@@ -19,6 +20,12 @@ use x509_certificate::{CapturedX509Certificate, InMemorySigningKeyPair, Sign};
 use zeroize::Zeroizing;
 
 type Result<T> = std::result::Result<T, String>;
+
+#[repr(C)]
+pub struct RCodesignBuffer {
+    pub data: *mut u8,
+    pub len: usize,
+}
 
 #[repr(C)]
 pub struct RCodesignIdentity {
@@ -227,6 +234,94 @@ pub unsafe extern "C" fn rcodesign_sign(
     }
 }
 
+fn signature_entitlements(signature: &EmbeddedSignature<'_>) -> Result<Option<Vec<u8>>> {
+    if let Some(xml) = signature.entitlements().map_err(|e| e.to_string())? {
+        let bytes = xml.as_str().as_bytes();
+        entitlements(bytes)?;
+        // Preserve the original XML, including literal CRLF inside strings;
+        // parsing and reserializing it can normalize that content.
+        return Ok(Some(bytes.to_vec()));
+    }
+    let value = if let Some(der) = signature.entitlements_der().map_err(|e| e.to_string())? {
+        der.parse_der().map_err(|e| e.to_string())?
+    } else {
+        return Ok(None);
+    };
+    if value.as_dictionary().is_none() {
+        return Err("entitlements must be a plist dictionary".into());
+    }
+    let mut xml = Vec::new();
+    value.to_writer_xml(&mut xml).map_err(|e| e.to_string())?;
+    Ok(Some(xml))
+}
+
+fn read_entitlements(path: &Path) -> Result<Option<Vec<u8>>> {
+    let data = match SignatureReader::from_path(path).map_err(|e| e.to_string())? {
+        SignatureReader::MachO(_, data) => data,
+        SignatureReader::Bundle(bundle) => {
+            let name = bundle
+                .main_executable()
+                .map_err(|e| e.to_string())?
+                .ok_or("bundle has no CFBundleExecutable")?;
+            // Match apple-bundles' main-executable resolution for shallow iOS
+            // bundles/frameworks and macOS bundles with Contents/MacOS layouts.
+            let executable = if bundle.shallow() {
+                bundle.resolve_path(name)
+            } else {
+                bundle.resolve_path(Path::new("MacOS").join(name))
+            };
+            std::fs::read(executable).map_err(|e| e.to_string())?
+        }
+        _ => return Err("entitlements require a Mach-O file or bundle".into()),
+    };
+    let file = MachFile::parse(&data).map_err(|e| e.to_string())?;
+    let macho = file.nth_macho(0).map_err(|e| e.to_string())?;
+    match macho.code_signature().map_err(|e| e.to_string())? {
+        Some(signature) => signature_entitlements(&signature),
+        None => Ok(None),
+    }
+}
+
+/// # Safety
+/// All pointers must satisfy the ownership and validity contract in rcodesign.h.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcodesign_read_entitlements(
+    input_path: *const c_char,
+    output: *mut RCodesignBuffer,
+    error: *mut *mut c_char,
+) -> i32 {
+    unsafe {
+        boundary(error, || {
+            let output = output.as_mut().ok_or("output buffer is NULL")?;
+            output.data = ptr::null_mut();
+            output.len = 0;
+            if let Some(xml) = read_entitlements(Path::new(string(input_path)?))? {
+                // A boxed slice carries exactly the length needed to reconstruct
+                // its allocation in rcodesign_buffer_free, without exposing a
+                // Vec's capacity or requiring the caller to use Rust's allocator.
+                let xml = xml.into_boxed_slice();
+                output.len = xml.len();
+                output.data = Box::into_raw(xml).cast::<u8>();
+            }
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// `buffer` must be NULL or an initialized, exclusively owned library buffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcodesign_buffer_free(buffer: *mut RCodesignBuffer) {
+    if let Some(buffer) = unsafe { buffer.as_mut() } {
+        if !buffer.data.is_null() {
+            let data = ptr::slice_from_raw_parts_mut(buffer.data, buffer.len);
+            drop(unsafe { Box::from_raw(data) });
+        }
+        buffer.data = ptr::null_mut();
+        buffer.len = 0;
+    }
+}
+
 /// # Safety
 /// `error` must be NULL or an unfreed error returned by this library.
 #[unsafe(no_mangle)]
@@ -354,6 +449,116 @@ mod tests {
         options.shallow = 0;
         options.entitlements = ptr::null();
         assert!(unsafe { configure_options(&mut SigningSettings::default(), &options) }.is_err());
+    }
+
+    #[test]
+    fn reads_xml_and_der_entitlements_without_verifying_trust() {
+        use apple_codesign::{
+            Blob, CodeSigningMagic, CodeSigningSlot, EntitlementsBlob, EntitlementsDerBlob,
+            create_superblob,
+        };
+        let xml = "<plist><dict><key>name</key><string>xml</string></dict></plist>";
+        let der_value =
+            entitlements(b"<plist><dict><key>name</key><string>der</string></dict></plist>")
+                .unwrap();
+        let xml_blob = (
+            CodeSigningSlot::Entitlements,
+            EntitlementsBlob::from_string(xml).to_blob_bytes().unwrap(),
+        );
+        let der_blob = (
+            CodeSigningSlot::EntitlementsDer,
+            EntitlementsDerBlob::from_plist(&der_value)
+                .unwrap()
+                .to_blob_bytes()
+                .unwrap(),
+        );
+        for (blobs, expected) in [
+            (vec![xml_blob.clone()], "xml"),
+            (vec![der_blob.clone()], "der"),
+            (vec![xml_blob, der_blob], "xml"),
+        ] {
+            let data = create_superblob(CodeSigningMagic::EmbeddedSignature, blobs.iter()).unwrap();
+            let signature = EmbeddedSignature::from_bytes(&data).unwrap();
+            let result = signature_entitlements(&signature).unwrap().unwrap();
+            assert_eq!(
+                entitlements(&result).unwrap().as_dictionary().unwrap()["name"].as_string(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn distinguishes_missing_empty_and_invalid_entitlements() {
+        use apple_codesign::{
+            Blob, CodeSigningMagic, CodeSigningSlot, EntitlementsBlob, create_superblob,
+        };
+        let empty = create_superblob(CodeSigningMagic::EmbeddedSignature, [].iter()).unwrap();
+        assert!(
+            signature_entitlements(&EmbeddedSignature::from_bytes(&empty).unwrap())
+                .unwrap()
+                .is_none()
+        );
+        for (xml, valid) in [
+            ("<plist><dict/></plist>", true),
+            ("not a plist", false),
+            ("<plist><array/></plist>", false),
+        ] {
+            let blobs = [(
+                CodeSigningSlot::Entitlements,
+                EntitlementsBlob::from_string(xml).to_blob_bytes().unwrap(),
+            )];
+            let data = create_superblob(CodeSigningMagic::EmbeddedSignature, blobs.iter()).unwrap();
+            let result = signature_entitlements(&EmbeddedSignature::from_bytes(&data).unwrap());
+            if valid {
+                assert!(
+                    entitlements(&result.unwrap().unwrap())
+                        .unwrap()
+                        .as_dictionary()
+                        .unwrap()
+                        .is_empty()
+                );
+            } else {
+                assert!(result.is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn preserves_original_xml_string_whitespace() {
+        use apple_codesign::{
+            Blob, CodeSigningMagic, CodeSigningSlot, EntitlementsBlob, create_superblob,
+        };
+        let xml = "<plist><dict><key>name</key><string>line1\r\nline2</string></dict></plist>";
+        let blobs = [(
+            CodeSigningSlot::Entitlements,
+            EntitlementsBlob::from_string(xml).to_blob_bytes().unwrap(),
+        )];
+        let data = create_superblob(CodeSigningMagic::EmbeddedSignature, blobs.iter()).unwrap();
+        let result = signature_entitlements(&EmbeddedSignature::from_bytes(&data).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, xml.as_bytes());
+    }
+
+    #[test]
+    fn failed_reads_clear_output_and_return_owned_errors() {
+        let mut output = RCodesignBuffer {
+            data: ptr::null_mut(),
+            len: 123,
+        };
+        let mut error = ptr::null_mut();
+        unsafe {
+            assert_eq!(
+                rcodesign_read_entitlements(ptr::null(), &mut output, &mut error),
+                1
+            );
+            assert!(output.data.is_null());
+            assert_eq!(output.len, 0);
+            assert!(!error.is_null());
+            rcodesign_error_free(error);
+            rcodesign_buffer_free(&mut output);
+            rcodesign_buffer_free(ptr::null_mut());
+        }
     }
 
     #[test]

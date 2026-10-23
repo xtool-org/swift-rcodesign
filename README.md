@@ -53,10 +53,22 @@ Info.plist, and shallow mode skips nested bundles but may sign embedded standalo
 Mach-O files. In-place signing can leave partial changes on failure. A separate
 output URL can be supplied to preserve the input.
 
+Read a bundle or Mach-O executable's entitlements with:
+
+```swift
+let entitlements: Data? = try RCodesign.entitlements(at: appURL)
+```
+
+The result is an XML plist dictionary, or `nil` when the executable is unsigned
+or has no entitlements. An empty dictionary remains a non-nil plist. Universal
+binaries use the first architecture in file order. XML entitlements take precedence;
+XML bytes are preserved, and DER is decoded when XML is absent. Reading does not verify the signature or trust,
+and malformed inputs throw rather than being treated as absent entitlements.
+
 `include/rcodesign.h` documents the C ABI and allocation contracts. The Swift
 wrapper frees Rust error allocations and throws owned errors. Rust unwinding
 panics are caught before returning through C. Selective metadata preservation
-and signature inspection are not exposed yet. The ABI is experimental until version 1.0.
+is not exposed yet. The ABI is experimental until version 1.0.
 
 ## Development
 

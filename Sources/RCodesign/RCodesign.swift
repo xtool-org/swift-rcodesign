@@ -63,6 +63,23 @@ public enum RCodesign {
         }
     }
 
+    /// Read entitlements from a Mach-O file or a bundle's main executable as an XML plist.
+    /// Returns nil for an unsigned executable or a signature without entitlements.
+    /// Universal binaries use the first architecture in file order. XML is preferred,
+    /// with DER used when XML is absent. This does not verify the signature or trust.
+    public static func entitlements(at input: URL) throws -> Data? {
+        guard input.isFileURL else {
+            throw Error(message: "Reading entitlements requires a file URL")
+        }
+        return try withOptionalCString(input.path) { inputPath in
+            var output = rcodesign_buffer()
+            defer { rcodesign_buffer_free(&output) }
+            try check { rcodesign_read_entitlements(inputPath, &output, $0) }
+            guard let data = output.data else { return nil }
+            return Data(bytes: data, count: output.len)
+        }
+    }
+
     private static func withIdentity<Result>(
         _ identity: Identity,
         body: (UnsafePointer<rcodesign_identity>?) throws -> Result

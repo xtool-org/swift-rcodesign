@@ -60,6 +60,29 @@ int32_t rcodesign_sign(const char *input_path, const char *output_path,
                       const rcodesign_identity *identity,
                       const rcodesign_sign_options *options, char **error);
 
+typedef struct {
+    uint8_t *data;
+    size_t len;
+} rcodesign_buffer;
+
+// Read entitlements from a Mach-O file or a bundle's main executable. Universal
+// binaries use the first Mach-O architecture in file order. Reads the XML slot,
+// preserving its bytes, or decodes DER to XML if the XML slot is absent.
+// This extracts metadata; it does not verify the signature or certificate trust.
+//
+// Uses the same status/error and borrowed-input conventions as rcodesign_sign.
+// output is required and must not alias any input or error storage. It is reset
+// to {NULL, 0} before reading, including on failure. Success with {NULL, 0} means
+// the executable is unsigned or has no entitlements; an empty dictionary returns
+// a nonempty plist. Invalid paths, binaries, or entitlements are errors.
+// Release a non-NULL result with rcodesign_buffer_free, never the C allocator.
+int32_t rcodesign_read_entitlements(const char *input_path,
+                                   rcodesign_buffer *output, char **error);
+
+// Accepts NULL or an initialized buffer returned by rcodesign_read_entitlements.
+// Frees its allocation and resets it to {NULL, 0}. Do not free copies of a buffer.
+void rcodesign_buffer_free(rcodesign_buffer *buffer);
+
 // Accepts NULL. Other values must be returned by this library and freed exactly
 // once. Never use the C allocator to free them.
 void rcodesign_error_free(char *error);
