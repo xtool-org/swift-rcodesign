@@ -25,7 +25,8 @@ let package = Package(
         ),
         .binaryTarget(
             name: "RCodesignBinary",
-            path: "out/RCodesignBinary.artifactbundle"
+            url: "https://github.com/xtool-org/swift-rcodesign/releases/download/source-0.1.0/RCodesignBinary.artifactbundle.zip",
+            checksum: "5cad6cf14654428e112eddfc7c71e58c371579be8c3ea5f9deadb7dfcd099048"
         ),
         .testTarget(name: "RCodesignTests", dependencies: ["RCodesign"])
     ]
