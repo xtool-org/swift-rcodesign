@@ -45,7 +45,15 @@ for rust_target in ${RUST_TARGETS:-$default_targets}; do
         cargo build --locked --profile "$profile" --target "$rust_target"
     fi
     mkdir -p "$bundle/$swift_triple"
-    cp "target/$rust_target/$output_profile/librcodesign_ffi.a" "$bundle/$swift_triple/librcodesign_ffi.a"
+    archive="$bundle/$swift_triple/librcodesign_ffi.a"
+    cp "target/$rust_target/$output_profile/librcodesign_ffi.a" "$archive"
+    if [[ "$profile" == release ]]; then
+        if [[ -n "$sdk" ]]; then
+            xcrun strip -S -x "$archive"
+        else
+            strip -S -x "$archive"
+        fi
+    fi
 done
 
 mkdir -p "$bundle/include"

@@ -7,7 +7,8 @@ publish = false
 
 [lib]
 name = "rcodesign_ffi"
-crate-type = ["staticlib", "rlib"]
+# including rlib makes the archives much larger
+crate-type = ["staticlib"]
 
 [dependencies]
 apple-codesign = { version = "=0.29.0", default-features = false }
@@ -21,5 +22,5 @@ bzip2-sys = { version = "0.1", features = ["static"] }
 lzma-sys = { version = "0.1", features = ["static"] }
 
 [profile.release]
-# Keep unwinding enabled: the C boundary converts Rust panics into errors.
-lto = "thin"
+lto = "fat"
+codegen-units = 1

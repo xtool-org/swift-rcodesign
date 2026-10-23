@@ -93,11 +93,11 @@ public enum RCodesign {
         guard !sorted.contains(where: { $0.key.utf8.contains(0) }) else {
             throw Error(message: "Bundle paths must not contain NUL bytes")
         }
-        let paths = sorted.map { $0.key as NSString }
+        let paths = sorted.map { Data(($0.key + "\0").utf8) as NSData }
         let plists = sorted.map { $0.value as NSData }
         let entries = zip(paths, plists).map { path, plist in
             rcodesign_entitlements(
-                bundle_path: path.utf8String,
+                bundle_path: path.bytes.assumingMemoryBound(to: CChar.self),
                 plist: plist.bytes.assumingMemoryBound(to: UInt8.self),
                 plist_len: plist.length
             )
