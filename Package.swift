@@ -6,7 +6,7 @@ let package = Package(
     name: "swift-rcodesign",
     platforms: [.macOS(.v11), .iOS(.v15)],
     products: [
-        .library(name: "RCodesign", targets: ["RCodesign"])
+        .library(name: "RCodesign", targets: ["RCodesign", "RCodesignBinary"])
     ],
     targets: [
         .target(
