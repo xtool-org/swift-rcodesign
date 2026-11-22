@@ -2,6 +2,21 @@
 
 import PackageDescription
 
+let useSystemLibrary = Context.environment["XTL_SYSTEM_LIBRARIES"] == "1"
+
+let binaryTarget: Target = if useSystemLibrary {
+    .systemLibrary(
+        name: "RCodesignBinary",
+        path: "SystemLibrary",
+        pkgConfig: "rcodesign_ffi"
+    )
+} else {
+    .binaryTarget(
+        name: "RCodesignBinary",
+        path: "out/RCodesignBinary.artifactbundle"
+    )
+}
+
 let package = Package(
     name: "swift-rcodesign",
     platforms: [.macOS(.v11), .iOS(.v15)],
@@ -23,10 +38,7 @@ let package = Package(
                 .linkedLibrary("util", .when(platforms: [.linux]))
             ]
         ),
-        .binaryTarget(
-            name: "RCodesignBinary",
-            path: "out/RCodesignBinary.artifactbundle"
-        ),
+        binaryTarget,
         .testTarget(name: "RCodesignTests", dependencies: ["RCodesign"])
     ]
 )

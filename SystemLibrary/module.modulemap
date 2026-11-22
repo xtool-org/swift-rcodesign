@@ -1,0 +1,5 @@
+module RCodesignBinary [system] [extern_c] {
+    header "shim.h"
+    link "rcodesign_ffi"
+    export *
+}
