@@ -95,6 +95,10 @@ Build the artifact bundle with `make build` before invoking SwiftPM from a sourc
 checkout. `make test-without-building` tests an existing bundle. Generated
 artifacts are ignored by Git.
 
+Set `XTL_SYSTEM_LIBRARIES=1` to link a `librcodesign_ffi` you built yourself
+instead of the artifact bundle. SwiftPM finds it with pkg-config as
+`rcodesign_ffi`, whose `Cflags` must point to the directory with `rcodesign.h`.
+
 ## Releases
 
 As in xadi, `./scripts/release.sh <major|minor|patch|v1.2.3>` pushes a `source-*` tag.
